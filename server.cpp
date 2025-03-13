@@ -1,11 +1,16 @@
 #include <arpa/inet.h>
 #include <cerrno>
+#include <csignal>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
+#include <errno.h>
 #include <iostream>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #define PORT "8000"
 #define BACKLOG 10
@@ -17,14 +22,22 @@ int main(int argc, char const *argv[]) {
   return 0;
 }
 
-void *getinaddr(addrinfo *p) {
+void *getinaddr(sockaddr *p) {
   void *actualaddr;
-  if (p->ai_family == AF_INET) {
-    actualaddr = (sockaddr_in *)p->ai_addr;
+  if (p->sa_family == AF_INET) {
+    actualaddr = &(((sockaddr_in *)p)->sin_addr);
   } else {
-    actualaddr = (sockaddr_in6 *)p->ai_addr;
+    actualaddr = &(((sockaddr_in6 *)p)->sin6_addr);
   }
   return actualaddr;
+}
+
+void sigchild_handler(int s) {
+  int cachederrno = errno;
+  while (waitpid(s, NULL, WNOHANG) > 0) {
+    std::cout << "Cleaning procees\n";
+  };
+  errno = cachederrno;
 }
 
 int server() {
@@ -38,6 +51,8 @@ int server() {
   // client socket addr
   sockaddr_storage their_addr;
   socklen_t addrlen;
+  // clean zombie
+  struct sigaction sa;
 
   // hint setup
   addrinfo hints;
@@ -63,24 +78,54 @@ int server() {
     /*
     if kernel allowed the socket to be bound exit
     */
-    if (errno != -1) {
+    if (err != -1) {
+      close(s);
       break;
     }
+  }
+  if (p == NULL) {
+    return 2;
+  }
+  sa.sa_handler = sigchild_handler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_RESTART;
+  if (sigaction(SIGCHLD, &sa, NULL) == -1) {
+    std::cerr << "sigaction\n";
   }
   /*
   start listening and accept queued requests
   */
-  inet_ntop(p->ai_family, getinaddr(p), ipstr, INET6_ADDRSTRLEN);
+  inet_ntop(p->ai_family, getinaddr(p->ai_addr), ipstr, INET6_ADDRSTRLEN);
   std::cerr << "starting to listen on " << ipstr << "\n";
   freeaddrinfo(res);
+  err = listen(s, BACKLOG); // setup queue
+  if (err == -1) {
+    std::cerr << "Error listening\n";
+    return -1;
+  }
   while (1) {
-    err = listen(s, BACKLOG); // setup queue
     int clientfd = accept(s, (sockaddr *)&their_addr, &(addrlen));
-    size_t len = sizeof(msg), bytes_sent = 0;
-    bytes_sent = send(clientfd, msg, len, 0);
-    if (bytes_sent == -1) {
-      std::cerr << "Unable to send\n";
+    sockaddr clientsockaddr;
+    socklen_t cliendaddrlen;
+    memset(&clientsockaddr, 0, sizeof(clientsockaddr));
+    err = getpeername(clientfd, &clientsockaddr, &cliendaddrlen);
+    if (err == -1) {
+      std::cout << "Error getting peername\n";
     }
+    inet_ntop(p->ai_family, getinaddr(&clientsockaddr), ipstr,
+              INET6_ADDRSTRLEN);
+    std::cerr << "client is on  " << ipstr << "\n";
+    if (fork() == 0) { // if child remove reference to socket
+      close(s);
+      std::cout << "pid is " << getpid() << "\n";
+      size_t len = sizeof(msg), bytes_sent = 0;
+      bytes_sent = send(clientfd, msg, len, 0);
+      if (bytes_sent == -1) {
+        std::cerr << "Unable to send\n";
+      }
+      return 0;
+    }
+    close(clientfd); // no need for parent to keep ref to client socket
   }
 
   return 0;

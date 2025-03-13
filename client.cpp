@@ -12,12 +12,12 @@
 int client(int argc, char const *argv[]);
 int main(int argc, char const *argv[]) { client(argc, argv); }
 
-void *getinaddr(addrinfo *p) {
+void *getinaddr(sockaddr *p) {
   void *actualaddr;
-  if (p->ai_family == AF_INET) {
-    actualaddr = (sockaddr_in *)p->ai_addr;
+  if (p->sa_family == AF_INET) {
+    actualaddr = &(((sockaddr_in *)p)->sin_addr);
   } else {
-    actualaddr = (sockaddr_in6 *)p->ai_addr;
+    actualaddr = &(((sockaddr_in6 *)p)->sin6_addr);
   }
   return actualaddr;
 }
@@ -26,7 +26,7 @@ int client(int argc, char const *argv[]) {
   int status, s, err, bytes_read;
 
   char ipstr[INET6_ADDRSTRLEN];
-  char buf[100];
+  char buf[100] = "Wozzup\n";
 
   addrinfo hints;
   addrinfo *res;
@@ -61,16 +61,17 @@ int client(int argc, char const *argv[]) {
     std::cerr << "Unable to connect\n";
     return 2;
   }
-  inet_ntop(p->ai_family, getinaddr(p), ipstr, INET_ADDRSTRLEN);
+  inet_ntop(p->ai_family, getinaddr(p->ai_addr), ipstr, INET_ADDRSTRLEN);
   std::cout << "Client connected to " << ipstr << "\n";
   /* start connection if got socket fd*/
   freeaddrinfo(res);
-  bytes_read = recv(s, buf, sizeof(buf), 0);
+  bytes_read = send(s, buf, strlen(buf) - 1, 0);
   if (bytes_read == -1) {
-    std::cerr << "Error receiving\n";
+    std::cerr << "Error sending\n";
     return 1;
   }
-  std::cout << "Client Received: " << std::string(buf) << " bytes\n";
+  buf[bytes_read] = '\0';
+  std::cout << "Client sent: " << buf << " bytes\n";
   close(s);
   return 0;
 }
